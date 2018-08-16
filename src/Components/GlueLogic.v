@@ -167,7 +167,28 @@ end
 
 endmodule
 
-
+module CUSTOMDECODER
+(
+    input wire enable,
+    input wire [2:0] in,
+    output reg [2:0] out
+);
+    always @* begin
+        case (in)
+            3'b000  :   out = 3'b000;
+            3'b001  :   out = 3'b010;
+            3'b010  :   out = 3'b100;
+            3'b011  :   out = 3'b100;
+            3'b100  :   out = 3'b001;
+            3'b101  :   out = 3'b001;
+            3'b110  :   out = 3'b001;
+            3'b111  :   out = 3'b001;
+            default :   out = 3'b000;
+        endcase
+    end
+endmodule
+        
+        
 //////////////////////////////////
 // Latches
 //////////////////////////////////
@@ -218,12 +239,12 @@ module TRIDLATCH #(parameter WIDTH = 1)(
 	input wire C,
 	input wire oe,
 	input wire [WIDTH-1:0] D,
-	output reg [WIDTH-1:0] Q
+	output wire [WIDTH-1:0] Q
 );
 
-wire Q_int;
+reg Q_int;
 
-assign Q_int = (oe) ? Q : 'bZ;
+assign Q = (oe) ? Q_int : 'bZ;
 
 DLATCH #(WIDTH) U0 (
 	.rst(rst),
@@ -323,6 +344,32 @@ begin
 	begin
 		sync_out = DEFAULT_DISABLED;
 	end
+end
+
+endmodule
+
+//////////////////////////////////
+// Comparator
+//////////////////////////////////
+
+module Comparator #(
+    parameter WIDTH = 1
+)
+(
+    input wire [WIDTH*2 - 1:0] in,
+    output reg [2:0] out
+);
+
+wire a = in[WIDTH*2 - 1:WIDTH];
+wire b = in[WIDTH -1:0];
+
+always @* begin
+    if (a>b)
+        out = 3'b100;
+    else if (a==b)
+        out = 3'b010;
+    else
+        out = 3'b001;
 end
 
 endmodule

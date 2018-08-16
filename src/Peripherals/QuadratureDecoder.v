@@ -36,7 +36,7 @@ module QuadratureDecoder #(
 // ==================================
 //// Internal Parameter Field
 // ==================================
-// parameter param = 0;
+ parameter MAX_COUNT = 359;
 // ==================================
 //// Registers
 // ==================================
@@ -82,11 +82,17 @@ always @(posedge clk or posedge rst) begin
     else if(phase_a_prev != phase_a) begin
         if(direction == 0)
         begin
-            counter = counter - 1;
+            if (counter == 0)
+                counter = MAX_COUNT;
+            else
+                counter = counter - 1;
         end
         if(direction == 1)
         begin
-            counter = counter + 1;
+            if (counter == MAX_COUNT)
+                counter = 0;
+            else    
+                counter = counter + 1;
         end
         phase_a_prev = phase_a;
     end
@@ -94,7 +100,7 @@ end
 
 endmodule
 
-module QuadratureTop(
+/*module QuadratureTop(
 	input wire clk,
 	input wire rst,
 	input wire ext_phase_a,
@@ -123,4 +129,4 @@ QuadratureDecoder U0 (
     .data(data)
 );
 
-endmodule
+endmodule*/

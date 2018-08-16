@@ -1,29 +1,20 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-`define SCAN_CODE_LENGTH        11
-`define SCAN_CODE_DATA_LENGTH   8
-`define RGB_RESOLUTION  		4
-`define FREQ_IN                 32'd100_000_000
-`define BREAK_CODE              8'hF0
-`define EXTEND_CODE             8'hE0
-`define SHIFT_CODE_LEFT         8'h12
-`define SHIFT_CODE_RIGHT        8'h59
+`define PWM_PERIOD                  8'hff
 
-`define LEFT_ARROW              8'h6B
-`define DOWN_ARROW              8'h72
-`define RIGHT_ARROW             8'hF4
-`define UP_ARROW                8'h75
+`define ROTARY_ENCODER_ADDRESS      16'h1000
+`define ENCODER_BUTTON_ADDRESS      16'h1004
+`define ENCODER_SWITCH_ADDRESS      16'h1008
 
-`define LEFT_ARROW_ASCII        8'hEB
-`define DOWN_ARROW_ASCII        8'hF2
-`define RIGHT_ARROW_ASCII       8'hF4
-`define UP_ARROW_ASCII          8'hF5
+`define CURRENT_RED_ADDRESS         16'h100c
+`define CURRENT_GREEN_ADDRESS       16'h1010
+`define CURRENT_BLUE_ADDRESS        16'h1014
 
-`define BACKSPACE               8'hF7
+`define SAVED_RED_ADDRESS           16'h1018
+`define SAVED_GREEN_ADDRESS         16'h101c
+`define SAVED_BLUE_ADDRESS          16'h1020 
 
-`define KEYBOARD_ADDRESS        32'h1784
-`define KEYBOARD_READY_ADDRESS  32'h1788
 //////////////////////////////////////////////////////////////////////////////////
 // Company:
 // Engineer:
@@ -119,20 +110,12 @@ module Motherboard #(parameter CLOCK_DIVIDER = 100)
 (
 	//// input 100 MHz clock
     input wire clk100Mhz,
-    input wire rst,
-    input wire ps2_clk,
-    input wire ps2_data,
-    //// Horizontal sync pulse for VGA controller
-    output wire hsync,
-    //// Vertical sync pulse for VGA controller
-    output wire vsync,
-    //// RGB 4-bit singal that go to a DAC (range 0V <-> 0.7V) to generate a color intensity
-    output wire [`RGB_RESOLUTION-1:0] r,
-    output wire [`RGB_RESOLUTION-1:0] g,
-    output wire [`RGB_RESOLUTION-1:0] b,
     input wire clk_select,
     input wire button_clock,
-    output wire show_button
+    input wire rst,
+    input wire ext_phase_a, ext_phase_b,
+    input wire ext_button, ext_switch,
+    output wire [2:0] LED_L, LED_R
 );
 
 // ==================================
@@ -152,28 +135,31 @@ wire [31:0] AddressBus, DataBus;
 wire [31:0] ProgramCounter, ALUResult, RegOut1, RegOut2, RegWriteData, RegWriteAddress;
 wire [31:0] Instruction;
 wire [3:0] MemWrite;
+wire MemWrite_en;
 wire MemRead, BusCycle;
 //// Address Decoding Signals
 wire text_access;
 wire extern_access;
 wire ram_access;
-wire key_cs;
-wire key_ready_cs;
-wire vga_fifo_cs;
-//// Keyboard signals
-wire keyboard_ready;
-wire [7:0] keyboard_ascii;
-wire [7:0] scan_code;
-wire [31:0] extended_count;
-wire next_key;
-//// VGA Signals
-wire vga_busy;
-wire [7:0] vga_DataBus;
-wire [11:0] vga_AddressBus;
+wire quad_we = 0;
+wire quad_dir;
+wire quad_decode_cs;
+wire btn_cs;
+wire cur_r_reg_cs, cur_g_reg_cs, cur_b_reg_cs, sav_r_reg_cs, sav_g_reg_cs, sav_b_reg_cs;
+wire [7:0] cur_r_reg_q, cur_g_reg_q, cur_b_reg_q, sav_r_reg_q, sav_g_reg_q, sav_b_reg_q;
+wire [7:0] cur_r_prev_q, cur_g_prev_q, cur_b_prev_q;
+wire [7:0] r_mux_out, g_mux_out, b_mux_out, prev_r_mux_out, prev_g_mux_out, prev_b_mux_out;
+wire [2:0] cur_r_comp_out, cur_g_comp_out, cur_b_comp_out, r_mux_comp_out, g_mux_comp_out, b_mux_comp_out;
+wire pwm_l_r_cs, pwm_l_g_cs, pwm_l_b_cs, pwm_r_r_cs, pwm_r_g_cs, pwm_r_b_cs;
 // ==================================
 //// Wire Assignments
 // ==================================
-assign show_button = button_clock_sync;
+assign pwm_l_r_cs = !cur_r_comp_out[1];
+assign pwm_l_g_cs = !cur_g_comp_out[1];
+assign pwm_l_b_cs = !cur_b_comp_out[1];
+assign pwm_r_r_cs = !r_mux_comp_out[1];
+assign pwm_r_g_cs = !g_mux_comp_out[1];
+assign pwm_r_b_cs = !b_mux_comp_out[1];
 // ==================================
 //// Modules
 // ==================================
@@ -215,7 +201,7 @@ ROM #(
 );
 
 MIPS mips(
-    .clk(!clk),
+    .clk(!cpu_clk),
     .rst(rst),
     .BusCycle(BusCycle),
     .MemWrite(MemWrite),
@@ -238,7 +224,7 @@ RAM #(
     .MINIMUM_SECTIONAL_WIDTH(8),
     .FILE_NAME("ram.mem")
 ) ram (
-    .clk(clk),
+    .clk(cpu_clk),
     .we(MemWrite),
     .cs(ram_access),
     .oe(MemRead),
@@ -247,131 +233,295 @@ RAM #(
 );
 
 
-DECODER #(.INPUT_WIDTH(3)) address_decoder
+CUSTOMDECODER address_decoder
 (
 	.enable(1'b1),
 	.in(AddressBus[14:12]),
 	.out({ ram_access, extern_access, text_access })
 );
 
-AND #(.WIDTH(3)) key_cs_and (
-	.in({ extern_access, (AddressBus == `KEYBOARD_ADDRESS), MemRead}),
-	.out(key_cs)
+AND #(.WIDTH(4)) MemWrite_en_and (
+    .in(MemWrite),
+    .out(MemWrite_en)
 );
 
-AND #(.WIDTH(3)) key_ready_cs_and (
-	.in({ extern_access, (AddressBus == `KEYBOARD_READY_ADDRESS), MemRead}),
-	.out(key_ready_cs)
+AND #(.WIDTH(3)) quad_decode_cs_and (
+    .in({extern_access, (AddressBus == `ROTARY_ENCODER_ADDRESS), MemRead}),
+    .out(quad_decode_cs)
 );
 
-AND #(.WIDTH(4)) vga_fifo_cs_and (
-	.in({ !key_cs, !key_ready_cs, !ram_access, extern_access}),
-	.out(vga_fifo_cs)
+AND #(.WIDTH(3)) ext_btn_and (
+    .in({extern_access, (AddressBus == `ENCODER_BUTTON_ADDRESS), MemRead}),
+    .out(btn_cs)
 );
 
-ONESHOT oneshot_next_key(
-    .clk(!clk100Mhz),
+AND #(.WIDTH(3)) cur_r_reg_and (
+    .in({extern_access, (AddressBus == `CURRENT_RED_ADDRESS), MemWrite_en}),
+    .out(cur_r_reg_cs)
+);
+
+AND #(.WIDTH(3)) cur_g_reg_and (
+    .in({extern_access, (AddressBus == `CURRENT_GREEN_ADDRESS), MemWrite_en}),
+    .out(cur_g_reg_cs)
+);
+
+AND #(.WIDTH(3)) cur_b_reg_and (
+    .in({extern_access, (AddressBus == `CURRENT_BLUE_ADDRESS), MemWrite_en}),
+    .out(cur_b_reg_cs)
+);
+
+AND #(.WIDTH(3)) sav_r_reg_and (
+    .in({extern_access, (AddressBus == `SAVED_RED_ADDRESS), MemWrite_en}),
+    .out(sav_r_reg_cs)
+);
+   
+AND #(.WIDTH(3)) sav_g_reg_and (
+    .in({extern_access, (AddressBus == `SAVED_GREEN_ADDRESS), MemWrite_en}),
+    .out(sav_g_reg_cs)
+);
+
+AND #(.WIDTH(3)) sav_b_reg_and (
+    .in({extern_access, (AddressBus == `SAVED_BLUE_ADDRESS), MemWrite_en}),
+    .out(sav_b_reg_cs)
+);
+
+REGISTER #(.WIDTH(8)
+) current_red_reg (
     .rst(rst),
-    .signal(key_cs),
-    .out(next_key)
+    .clk(cpu_clk),
+    .load(cur_r_reg_cs),
+    .D(DataBus[7:0]),
+    .Q(cur_r_reg_q)
 );
 
-ASCII_Keyboard keyboard(
-    .clk(clk100Mhz),
+REGISTER #(.WIDTH(8)
+) current_red_prev (
     .rst(rst),
-    .ps2_clk(ps2_clk),
-    .ps2_data(ps2_data),
-    .oe(key_cs),
-    .next(next_key),
-    .ascii(keyboard_ascii),
-    .ready(keyboard_ready),
-    .scan_code_reg(scan_code),
-    .extended_count(extended_count),
-    .command()
+    .clk(cpu_clk),
+    .load(!cur_r_comp_out[1]),
+    .D(cur_r_reg_q),
+    .Q(cur_r_prev_q)
 );
 
-TRIBUFFER #(.WIDTH(32))
-key_ready_buffer
-(
-	.oe(key_ready_cs),
-	.in({ 31'b0, keyboard_ready }),
-	.out(DataBus)
+Comparator #(.WIDTH(8)
+) current_red_comparator (
+    .in({cur_r_reg_q, cur_r_prev_q}),
+    .out(cur_r_comp_out)
 );
 
-
-TRIBUFFER #(.WIDTH(32))
-key_ascii_buffer
-(
-	.oe(key_cs),
-	.in({ 24'b0, keyboard_ascii }),
-	.out(DataBus)
-);
-
-wire ascii_fifo_empty, address_fifo_empty;
-wire vga_cs;
-wire [31:0] ControlBus      = { {(32-12){1'b0}}, 3'b0, BusCycle, 3'b0, MemRead, 3'b0, MemWrite };
-wire [31:0] KeyboardSignals = { 20'b0, keyboard_ascii, scan_code, 3'b0, keyboard_ready};
-
-FIFO #(
-    .LENGTH(32),
-    .WIDTH(8)
-) vga_ascii_fifo (
-    .clk(clk),
+REGISTER #(.WIDTH(8)
+) current_green_reg (
     .rst(rst),
-    .wr_cs(vga_fifo_cs),
-    .wr_en(|MemWrite),
-    .rd_cs(!vga_busy),
-    .rd_en(!vga_busy),
-    .full(),
-    .empty(ascii_fifo_empty),
-    .out(vga_DataBus),
-    .in(DataBus[7:0])
+    .clk(cpu_clk),
+    .load(cur_g_reg_cs),
+    .D(DataBus[7:0]),
+    .Q(cur_g_reg_q)
 );
 
-
-FIFO #(
-    .LENGTH(32),
-    .WIDTH(12)
-) vga_address_fifo (
-    .clk(clk),
+REGISTER #(.WIDTH(8)
+) current_green_prev (
     .rst(rst),
-    .wr_cs(vga_fifo_cs),
-    .wr_en(|MemWrite),
-    .rd_cs(!vga_busy),
-    .rd_en(!vga_busy),
-    .full(),
-    .empty(address_fifo_empty),
-    .out(vga_AddressBus),
-    .in({ 1'b0, AddressBus[10:0] })
+    .clk(cpu_clk),
+    .load(!cur_g_comp_out[1]),
+    .D(cur_g_reg_q),
+    .Q(cur_g_prev_q)
 );
 
-
-OR #(.WIDTH(2)) fifo_to_vga_cs_and (
-	.in({ !ascii_fifo_empty, !address_fifo_empty }),
-	.out(vga_cs)
+Comparator #(.WIDTH(8)
+) current_green_comparator (
+    .in({cur_g_reg_q, cur_g_prev_q}),
+    .out(cur_g_comp_out)
 );
 
-VGA_Terminal vga_term(
-    .clk(clk100Mhz),
+REGISTER #(.WIDTH(8)
+) current_blue_reg (
     .rst(rst),
-    .hsync(hsync),
-    .vsync(vsync),
-    .r(r),
-    .g(g),
-    .b(b),
-    .value0(ProgramCounter), .value1 (RegWriteAddress), .value2(KeyboardSignals),  .value3(32'h0),
-    .value4(ALUResult),      .value5 (DataBus),         .value6(extended_count),  .value7(32'h0),
-    .value8(RegOut1),        .value9 (AddressBus),      .value10(32'h0), .value11(32'h0),
-    .value12(RegOut2),       .value13(ControlBus),      .value14(32'h0), .value15(32'h0),
-    .value16(RegWriteData),  .value17(Instruction),     .value18(32'h0), .value19(32'h0),
-    .address(vga_AddressBus),
-    .data(vga_DataBus),
-    .cs(vga_cs),
-    .busy(vga_busy),
-    .text(3'b010),
-    .background(3'b000)
+    .clk(cpu_clk),
+    .load(cur_b_reg_cs),
+    .D(DataBus[7:0]),
+    .Q(cur_b_reg_q)
 );
 
+REGISTER #(.WIDTH(8)
+) current_blue_prev (
+    .rst(rst),
+    .clk(cpu_clk),
+    .load(!cur_b_comp_out[1]),
+    .D(cur_b_reg_q),
+    .Q(cur_b_prev_q)
+);
+
+Comparator #(.WIDTH(8)
+) current_blue_comparator (
+    .in({cur_b_reg_q, cur_b_prev_q}),
+    .out(cur_b_comp_out)
+);
+
+REGISTER #(.WIDTH(8)
+) saved_red_reg (
+    .rst(rst),
+    .clk(cpu_clk),
+    .load(sav_r_reg_cs),
+    .D(DataBus[7:0]),
+    .Q(sav_r_reg_q)
+);
+
+REGISTER #(.WIDTH(8)
+) saved_green_reg (
+    .rst(rst),
+    .clk(cpu_clk),
+    .load(sav_g_reg_cs),
+    .D(DataBus[7:0]),
+    .Q(sav_g_reg_q)
+);
+
+REGISTER #(.WIDTH(8)
+) saved_blue_reg (
+    .rst(rst),
+    .clk(cpu_clk),
+    .load(sav_b_reg_cs),
+    .D(DataBus[7:0]),
+    .Q(sav_b_reg_q)
+);
+
+MUX #(
+    .WIDTH(8),
+    .INPUTS(2)
+) r_led_source_mux (
+    .select(ext_switch),
+    .in({cur_r_reg_q, sav_r_reg_q}),
+    .out(r_mux_out)
+);
+
+REGISTER #(.WIDTH(8)
+) prev_r_mux_register (
+    .rst(rst),
+    .clk(cpu_clk),
+    .load(!r_mux_comp_out),
+    .D(r_mux_out),
+    .Q(prev_r_mux_out)
+);
+
+Comparator #(.WIDTH(8)
+) r_mux_comparator (
+    .in({r_mux_out, prev_r_mux_out}),
+    .out(r_mux_comp_out)
+);
+
+MUX #(
+    .WIDTH(8),
+    .INPUTS(2)
+) g_led_source_mux (
+    .select(ext_switch),
+    .in({cur_g_reg_q, sav_g_reg_q}),
+    .out(g_mux_out)
+);
+
+REGISTER #(.WIDTH(8)
+) prev_g_mux_register (
+    .rst(rst),
+    .clk(cpu_clk),
+    .load(!g_mux_comp_out),
+    .D(g_mux_out),
+    .Q(prev_g_mux_out)
+);
+
+Comparator #(.WIDTH(8)
+) g_mux_comparator (
+    .in({g_mux_out, prev_g_mux_out}),
+    .out(g_mux_comp_out)
+);
+
+MUX #(
+    .WIDTH(8),
+    .INPUTS(2)
+) b_led_source_mux (
+    .select(ext_switch),
+    .in({cur_b_reg_q, sav_b_reg_q}),
+    .out(b_mux_out)
+);
+
+REGISTER #(.WIDTH(8)
+) prev_b_mux_register (
+    .rst(rst),
+    .clk(cpu_clk),
+    .load(!b_mux_comp_out),
+    .D(b_mux_out),
+    .Q(prev_b_mux_out)
+);
+
+Comparator #(.WIDTH(8)
+) b_mux_comparator (
+    .in({b_mux_out, prev_b_mux_out}),
+    .out(b_mux_comp_out)
+);
+
+QuadratureDecoder #(.BUS_WIDTH(32)
+) quad_decoder (
+    .clk(cpu_clk), 
+    .rst(rst), 
+    .oe(quad_decode_cs), 
+    .we(quad_we),
+    .ext_phase_a(ext_phase_a), 
+    .ext_phase_b(ext_phase_b),
+    .direction(quad_dir),
+    .data(DataBus)
+);
+
+TRIBUFFER #(.WIDTH(32)
+) button_input_buffer (
+    .oe(btn_cs),
+    .in({31'b0, ext_button}),
+    .out(DataBus)
+);
+
+PWM_Driver PWM_L_R (
+    .sys_clk(clk100Mhz),
+    .reset(rst),
+    .load(pwm_l_r_cs),
+    .data({cur_r_reg_q, `PWM_PERIOD}),
+    .signal(LED_L[2])
+);
+
+PWM_Driver PWM_L_G (
+    .sys_clk(clk100Mhz),
+    .reset(rst),
+    .load(pwm_l_g_cs),
+    .data({cur_g_reg_q, `PWM_PERIOD}),
+    .signal(LED_L[1])
+);
+
+PWM_Driver PWM_L_B (
+    .sys_clk(clk100Mhz),
+    .reset(rst),
+    .load(pwm_l_b_cs),
+    .data({cur_b_reg_q, `PWM_PERIOD}),
+    .signal(LED_L[0])
+);
+
+PWM_Driver PWM_R_R (
+    .sys_clk(clk100Mhz),
+    .reset(rst),
+    .load(pwm_r_r_cs),
+    .data({r_mux_out, `PWM_PERIOD}),
+    .signal(LED_R[2])
+);
+
+PWM_Driver PWM_R_G (
+    .sys_clk(clk100Mhz),
+    .reset(rst),
+    .load(pwm_r_g_cs),
+    .data({g_mux_out, `PWM_PERIOD}),
+    .signal(LED_R[1])
+);
+
+PWM_Driver PWM_R_B (
+    .sys_clk(clk100Mhz),
+    .reset(rst),
+    .load(pwm_r_b_cs),
+    .data({b_mux_out, `PWM_PERIOD}),
+    .signal(LED_R[0])
+);
 // ==================================
 //// Registers
 // ==================================
