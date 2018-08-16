@@ -1,0 +1,13 @@
+#-----------------------------------------------------------
+# Vivado v2017.4 (64-bit)
+# SW Build 2086221 on Fri Dec 15 20:55:39 MST 2017
+# IP Build 2085800 on Fri Dec 15 22:25:07 MST 2017
+# Start of session at: Sun Aug 12 18:37:17 2018
+# Process ID: 3956
+# Current directory: C:/Users/Colin/SJSU_Internship_2018/Motherboard/Motherboard
+# Command line: vivado.exe -gui_launcher_event rodinguilauncherevent8124 C:\Users\Colin\SJSU_Internship_2018\Motherboard\Motherboard\Motherboard.xpr
+# Log file: C:/Users/Colin/SJSU_Internship_2018/Motherboard/Motherboard/vivado.log
+# Journal file: C:/Users/Colin/SJSU_Internship_2018/Motherboard/Motherboard\vivado.jou
+#-----------------------------------------------------------
+start_gui
+open_project C:/Users/Colin/SJSU_Internship_2018/Motherboard/Motherboard/Motherboard.xpr
